@@ -20,7 +20,7 @@ function CacheStatCard({ label, value, subLabel, isGood }: CacheStatCardProps) {
   return (
     <div className="rounded-sm bg-gray-50 px-4 py-3 dark:bg-gray-700/50">
       <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
-      <div className={`text-lg font-semibold ${isGood ? 'text-green-600 dark:text-green-400' : 'text-orange-600 dark:text-orange-400'}`}>
+      <div className={`text-lg font-semibold ${isGood == null ? 'text-gray-400 dark:text-gray-500' : isGood ? 'text-green-600 dark:text-green-400' : 'text-orange-600 dark:text-orange-400'}`}>
         {value}
       </div>
       {subLabel && <div className="text-xs text-gray-400 dark:text-gray-500">{subLabel}</div>}
@@ -34,11 +34,11 @@ export function CacheTab({ data, isDark, useLogScale, onTestClick }: CacheTabPro
 
     const accountRates = data.map((d) => d.accountCacheHitRate)
     const storageRates = data.map((d) => d.storageCacheHitRate)
-    const codeRates = data.map((d) => d.codeCacheHitRate)
+    const codeRates = data.map((d) => d.codeCacheHitRate).filter((r): r is number => r != null)
 
     const avgAccount = accountRates.reduce((a, b) => a + b, 0) / accountRates.length
     const avgStorage = storageRates.reduce((a, b) => a + b, 0) / storageRates.length
-    const avgCode = codeRates.reduce((a, b) => a + b, 0) / codeRates.length
+    const avgCode = codeRates.length > 0 ? codeRates.reduce((a, b) => a + b, 0) / codeRates.length : null
 
     const poorAccountCount = accountRates.filter((r) => r < 80).length
     const poorStorageCount = storageRates.filter((r) => r < 80).length
@@ -51,6 +51,7 @@ export function CacheTab({ data, isDark, useLogScale, onTestClick }: CacheTabPro
       poorAccountCount,
       poorStorageCount,
       poorCodeCount,
+      codeTotal: codeRates.length,
       total: data.length,
     }
   }, [data])
@@ -79,8 +80,8 @@ export function CacheTab({ data, isDark, useLogScale, onTestClick }: CacheTabPro
         />
         <CacheStatCard
           label="Avg Code Cache"
-          value={`${cacheStats.avgCode.toFixed(1)}%`}
-          isGood={cacheStats.avgCode >= 80}
+          value={cacheStats.avgCode != null ? `${cacheStats.avgCode.toFixed(1)}%` : '-'}
+          isGood={cacheStats.avgCode != null ? cacheStats.avgCode >= 80 : undefined}
         />
         <CacheStatCard
           label="Poor Account (<80%)"
@@ -96,9 +97,9 @@ export function CacheTab({ data, isDark, useLogScale, onTestClick }: CacheTabPro
         />
         <CacheStatCard
           label="Poor Code (<80%)"
-          value={cacheStats.poorCodeCount.toString()}
-          subLabel={`of ${cacheStats.total} tests`}
-          isGood={cacheStats.poorCodeCount === 0}
+          value={cacheStats.codeTotal > 0 ? cacheStats.poorCodeCount.toString() : '-'}
+          subLabel={cacheStats.codeTotal > 0 ? `of ${cacheStats.codeTotal} tests` : undefined}
+          isGood={cacheStats.codeTotal > 0 ? cacheStats.poorCodeCount === 0 : undefined}
         />
       </div>
 
