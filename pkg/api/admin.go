@@ -1,12 +1,13 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
+	"github.com/ethpandaops/benchmarkoor/pkg/api/indexstore"
 	"github.com/ethpandaops/benchmarkoor/pkg/api/store"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -552,12 +553,16 @@ type deleteRunsRequest struct {
 }
 
 type deleteRunsResponse struct {
-	Status  string   `json:"status"`
-	Deleted int      `json:"deleted"`
-	Errors  []string `json:"errors,omitempty"`
+	Status string   `json:"status"`
+	Queued int      `json:"queued"`
+	Errors []string `json:"errors,omitempty"`
 }
 
-// handleDeleteRuns bulk-deletes runs from storage and the index database.
+// handleDeleteRuns queues runs for deletion. The request returns as soon as
+// every run is marked; the run deleter removes them from storage and the
+// index in the background, in the order they were queued. Queuing a run
+// that is already queued is a no-op. A run that is still running is
+// refused: deleting it would race with the active runner.
 func (s *server) handleDeleteRuns(
 	w http.ResponseWriter, r *http.Request,
 ) {
@@ -583,59 +588,142 @@ func (s *server) handleDeleteRuns(
 		return
 	}
 
-	// Detach from the HTTP request context so large deletions
-	// (e.g. 30k S3 objects) aren't canceled when the client disconnects.
-	ctx := context.WithoutCancel(r.Context())
-
 	var (
-		deleted int
-		errs    []string
+		queued int
+		errs   []string
 	)
 
 	for _, runID := range req.RunIDs {
-		run, err := s.indexStore.GetRunByRunID(ctx, runID)
-		if err != nil {
+		err := s.indexStore.MarkRunForDeletion(r.Context(), runID)
+
+		switch {
+		case err == nil:
+			queued++
+		case errors.Is(err, indexstore.ErrRunNotFound):
 			errs = append(errs, fmt.Sprintf(
 				"%s: not found in index", runID,
 			))
-
-			continue
-		}
-
-		// Delete from storage first.
-		if err := s.storageDeleter.DeleteRun(
-			ctx, run.DiscoveryPath, runID,
-		); err != nil {
-			s.log.WithError(err).WithField("run_id", runID).
-				Error("Failed to delete run from storage")
+		case errors.Is(err, indexstore.ErrRunInProgress):
 			errs = append(errs, fmt.Sprintf(
-				"%s: storage delete failed: %v", runID, err,
+				"%s: still in progress", runID,
 			))
-
-			continue
-		}
-
-		// Delete from index (transactional: test_stats,
-		// block_logs, run, orphaned suite — all or nothing).
-		if err := s.indexStore.DeleteRunCascade(
-			ctx, runID,
-		); err != nil {
+		default:
 			s.log.WithError(err).WithField("run_id", runID).
-				Error("Failed to delete run from index")
+				Error("Failed to queue run for deletion")
 			errs = append(errs, fmt.Sprintf(
-				"%s: index delete failed: %v", runID, err,
+				"%s: queue failed: %v", runID, err,
 			))
-
-			continue
 		}
-
-		deleted++
 	}
 
-	resp := deleteRunsResponse{
-		Status:  "ok",
-		Deleted: deleted,
-		Errors:  errs,
+	if queued > 0 {
+		s.kickRunDeleter()
+	}
+
+	writeJSON(w, http.StatusAccepted, deleteRunsResponse{
+		Status: "ok",
+		Queued: queued,
+		Errors: errs,
+	})
+}
+
+type cancelDeleteRunsResponse struct {
+	Status    string   `json:"status"`
+	Cancelled int      `json:"cancelled"`
+	Errors    []string `json:"errors,omitempty"`
+}
+
+// handleCancelDeleteRuns takes runs out of the deletion queue. It is
+// best-effort: a run the worker is deleting at this moment is still
+// removed. A run that is not queued counts as cancelled.
+func (s *server) handleCancelDeleteRuns(
+	w http.ResponseWriter, r *http.Request,
+) {
+	var req deleteRunsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse{"invalid request body"})
+
+		return
+	}
+
+	if len(req.RunIDs) == 0 {
+		writeJSON(w, http.StatusBadRequest,
+			errorResponse{"run_ids is required"})
+
+		return
+	}
+
+	var (
+		cancelled int
+		errs      []string
+	)
+
+	for _, runID := range req.RunIDs {
+		err := s.indexStore.UnmarkRunForDeletion(r.Context(), runID)
+
+		switch {
+		case err == nil:
+			cancelled++
+		case errors.Is(err, indexstore.ErrRunNotFound):
+			errs = append(errs, fmt.Sprintf(
+				"%s: not found in index", runID,
+			))
+		default:
+			s.log.WithError(err).WithField("run_id", runID).
+				Error("Failed to cancel run deletion")
+			errs = append(errs, fmt.Sprintf(
+				"%s: cancel failed: %v", runID, err,
+			))
+		}
+	}
+
+	writeJSON(w, http.StatusOK, cancelDeleteRunsResponse{
+		Status:    "ok",
+		Cancelled: cancelled,
+		Errors:    errs,
+	})
+}
+
+// deletionQueueEntry is one queued run in the /admin/runs/deletion-queue
+// response.
+type deletionQueueEntry struct {
+	RunID         string `json:"run_id"`
+	DiscoveryPath string `json:"discovery_path"`
+	RequestedAt   string `json:"requested_at"`
+	Error         string `json:"error,omitempty"`
+}
+
+// handleDeletionQueue lists the runs queued for deletion in queue order.
+func (s *server) handleDeletionQueue(
+	w http.ResponseWriter, r *http.Request,
+) {
+	runs, err := s.indexStore.ListRunsPendingDeletion(r.Context())
+	if err != nil {
+		s.log.WithError(err).Error("Failed to list runs pending deletion")
+		writeJSON(w, http.StatusInternalServerError,
+			errorResponse{"internal error"})
+
+		return
+	}
+
+	resp := make([]deletionQueueEntry, 0, len(runs))
+
+	for i := range runs {
+		run := &runs[i]
+
+		var requestedAt string
+		if run.DeletionRequestedAt != nil {
+			requestedAt = run.DeletionRequestedAt.UTC().
+				Format("2006-01-02T15:04:05Z")
+		}
+
+		resp = append(resp, deletionQueueEntry{
+			RunID:         run.RunID,
+			DiscoveryPath: run.DiscoveryPath,
+			RequestedAt:   requestedAt,
+			Error:         run.DeletionError,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, resp)

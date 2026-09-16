@@ -143,10 +143,11 @@ export function useRunIndexer() {
   })
 }
 
-// Run deletion
+// Run deletion. The API queues the runs and a background worker deletes
+// them in order, so the response only reports how many were queued.
 interface DeleteRunsResponse {
   status: string
-  deleted: number
+  queued: number
   errors?: string[]
 }
 
@@ -155,6 +156,24 @@ export function useDeleteRuns() {
   return useMutation<DeleteRunsResponse, Error, string[]>({
     mutationFn: (runIds: string[]) =>
       adminFetch('/api/v1/admin/runs/delete', {
+        method: 'POST',
+        body: JSON.stringify({ run_ids: runIds }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['index'] }),
+  })
+}
+
+interface CancelDeleteRunsResponse {
+  status: string
+  cancelled: number
+  errors?: string[]
+}
+
+export function useCancelDeleteRuns() {
+  const queryClient = useQueryClient()
+  return useMutation<CancelDeleteRunsResponse, Error, string[]>({
+    mutationFn: (runIds: string[]) =>
+      adminFetch('/api/v1/admin/runs/delete/cancel', {
         method: 'POST',
         body: JSON.stringify({ run_ids: runIds }),
       }),
