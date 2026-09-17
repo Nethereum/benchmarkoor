@@ -75,7 +75,10 @@ func (s *nethereumSpec) DefaultEnvironment() map[string]string {
 // RPCRollbackSpec returns nil — the Nethereum harness node does not expose
 // debug_setHead; use a container-level rollback strategy (container-recreate).
 func (s *nethereumSpec) RPCRollbackSpec() *RPCRollbackSpec {
-	return nil
+	return &RPCRollbackSpec{
+		Method:    RollbackMethodSetHeadHex,
+		RPCMethod: "debug_setHead",
+	}
 }
 
 func (s *nethereumSpec) DefaultConfigFiles() map[string]string {
