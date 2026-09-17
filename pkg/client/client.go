@@ -16,6 +16,7 @@ const (
 	ClientNimbus     ClientType = "nimbus"
 	ClientReth       ClientType = "reth"
 	ClientEthrex     ClientType = "ethrex"
+	ClientNethereum  ClientType = "nethereum"
 )
 
 // RollbackMethodType identifies how a client performs state rollback.
@@ -149,7 +150,7 @@ type Registry interface {
 // NewRegistry creates a registry with all supported clients.
 func NewRegistry() Registry {
 	r := &registry{
-		specs: make(map[ClientType]Spec, 7),
+		specs: make(map[ClientType]Spec, 8),
 	}
 
 	// Register all supported clients.
@@ -160,6 +161,7 @@ func NewRegistry() Registry {
 	r.Register(NewNimbusSpec())
 	r.Register(NewRethSpec())
 	r.Register(NewEthrexSpec())
+	r.Register(NewNethereumSpec())
 
 	return r
 }
