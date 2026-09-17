@@ -3221,6 +3221,7 @@ var validClients = map[string]struct{}{
 	"nimbus":     {},
 	"reth":       {},
 	"ethrex":     {},
+	"nethereum":  {},
 }
 
 // validDropMemoryCachesValues contains valid values for drop_memory_caches.

@@ -1,0 +1,23 @@
+global:
+  log_level: info
+runner:
+  client_logs_to_stdout: true
+  cleanup_on_start: true
+  benchmark:
+    results_dir: ./results
+    generate_results_index: true
+    generate_suite_stats: true
+    system_resource_collection_enabled: false
+    tests:
+      filter: "bn128"
+      source:
+        eest_fixtures:
+          github_repo: ethereum/execution-specs
+          github_release: tests-benchmark@v0.0.9
+  client:
+    config: {}
+  instances:
+    - id: nethereum
+      client: nethereum
+      image: nethereum/harness-node:local
+      pull_policy: never
